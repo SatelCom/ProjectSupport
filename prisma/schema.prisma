@@ -1,0 +1,477 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -----------------------------------------------------------------------------
+// AUTENTICACIÓN Y AUTORIZACIÓN (RBAC)
+// -----------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  lastName     String
+  username     String     @unique
+  email        String     @unique
+  roleId       String
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  role         Role       @relation(fields: [roleId], references: [id])
+  tickets      Ticket[]   @relation("AssignedTechnician")
+  createdTickets Ticket[] @relation("TicketCreator")
+  activityLogs ActivityLog[]
+  auditLogs    AuditLog[]
+  conversations AIConversation[]
+  manuals      Manual[]   @relation("ManualUploader")
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique // JEFE, ASISTENTE, TECNICO, etc.
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  code        String           @unique // e.g. "commands.view", "tickets.create"
+  module      String           // e.g. "commands", "tickets"
+  action      String           // e.g. "view", "create", "edit", "delete"
+  description String?
+  createdAt   DateTime         @default(now())
+
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// -----------------------------------------------------------------------------
+// COMMANDS Y COMBOS
+// -----------------------------------------------------------------------------
+
+enum ResourceStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model CommandCategory {
+  id          String         @id @default(uuid())
+  name        String         @unique
+  description String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  commands    Command[]
+
+  @@map("command_categories")
+}
+
+model Command {
+  id                String          @id @default(uuid())
+  name              String
+  username          String?         // Usuario del equipo/protocolo (ej. stlcm)
+  encryptedPassword String?         // Cifrado AES-256 en base de datos
+  command           String          // Comando real (ej. cpureset)
+  description       String?
+  categoryId        String?
+  deviceType        String?         // Modelo / Protocolo de equipo GPS
+  status            ResourceStatus  @default(ACTIVE)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  category          CommandCategory? @relation(fields: [categoryId], references: [id])
+  comboCommands     ComboCommand[]
+  knowledgeEntries  AIKnowledgeEntry[]
+
+  @@map("commands")
+}
+
+model Combo {
+  id          String          @id @default(uuid())
+  name        String
+  description String?
+  category    String?
+  status      ResourceStatus  @default(ACTIVE)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  commands    ComboCommand[]
+
+  @@map("combos")
+}
+
+model ComboCommand {
+  id        String   @id @default(uuid())
+  comboId   String
+  commandId String
+  order     Int      @default(0)
+
+  combo     Combo    @relation(fields: [comboId], references: [id], onDelete: Cascade)
+  command   Command  @relation(fields: [commandId], references: [id], onDelete: Cascade)
+
+  @@unique([comboId, commandId])
+  @@map("combo_commands")
+}
+
+// -----------------------------------------------------------------------------
+// APPLICATIONS
+// -----------------------------------------------------------------------------
+
+model ApplicationCategory {
+  id           String        @id @default(uuid())
+  name         String        @unique
+  description  String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  applications Application[]
+
+  @@map("application_categories")
+}
+
+model Application {
+  id                String              @id @default(uuid())
+  name              String
+  description       String?
+  url               String
+  username          String?
+  encryptedPassword String?             // Cifrado AES-256
+  icon              String?
+  categoryId        String?
+  status            ResourceStatus      @default(ACTIVE)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  category          ApplicationCategory? @relation(fields: [categoryId], references: [id])
+
+  @@map("applications")
+}
+
+// -----------------------------------------------------------------------------
+// SCENARIOS Y SCENARIO CARDS
+// -----------------------------------------------------------------------------
+
+enum ScenarioCardType {
+  APPLICATION
+  COMMAND
+  COMBO
+  MANUAL
+  MODULE
+  EXTERNAL_LINK
+  SCENARIO
+}
+
+model Scenario {
+  id          String         @id @default(uuid())
+  name        String
+  description String?
+  icon        String?
+  status      ResourceStatus @default(ACTIVE)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  cards       ScenarioCard[]
+
+  @@map("scenarios")
+}
+
+model ScenarioCard {
+  id          String           @id @default(uuid())
+  scenarioId  String
+  title       String
+  description String?
+  type        ScenarioCardType
+  targetId    String?          // Referencia a ID de Command, Combo, Manual, Application
+  externalUrl String?
+  order       Int              @default(0)
+  status      ResourceStatus   @default(ACTIVE)
+
+  scenario    Scenario         @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+
+  @@map("scenario_cards")
+}
+
+// -----------------------------------------------------------------------------
+// MANUALS (Archivos almacenados en Google Drive)
+// -----------------------------------------------------------------------------
+
+model ManualCategory {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  manuals     Manual[]
+
+  @@map("manual_categories")
+}
+
+model Manual {
+  id          String          @id @default(uuid())
+  name        String
+  description String?
+  fileName    String
+  driveFileId String          // ID del archivo en Google Drive
+  mimeType    String          @default("application/pdf")
+  fileSize    Int             // Bytes
+  categoryId  String?
+  uploadedBy  String
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  category    ManualCategory? @relation(fields: [categoryId], references: [id])
+  uploader    User            @relation("ManualUploader", fields: [uploadedBy], references: [id])
+
+  @@map("manuals")
+}
+
+// -----------------------------------------------------------------------------
+// TICKETS Y TEMPLATES
+// -----------------------------------------------------------------------------
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  ESCALATED
+  CANCELLED
+}
+
+model Ticket {
+  id           String         @id @default(uuid())
+  type         String         // Mantenimiento, Instalación, Diagnóstico, etc.
+  technicianId String?
+  client       String
+  code         String?        // Código interno de unidad/equipo
+  imei         String?
+  priority     TicketPriority @default(MEDIUM)
+  problem      String
+  observations String?
+  result       String?
+  status       TicketStatus   @default(PENDING)
+  createdBy    String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  technician   User?          @relation("AssignedTechnician", fields: [technicianId], references: [id])
+  creator      User           @relation("TicketCreator", fields: [createdBy], references: [id])
+  activityLogs ActivityLog[]
+
+  @@map("tickets")
+}
+
+model TicketTemplate {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  template  String   // Formato con variables: {{prioridad}} {{tecnico}} {{cliente}}...
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ticket_templates")
+}
+
+// -----------------------------------------------------------------------------
+// BITÁCORA (ActivityLog Global)
+// -----------------------------------------------------------------------------
+
+model ActivityLog {
+  id            String   @id @default(uuid())
+  userId        String   // Técnico autenticado
+  ticketId      String?  // Relación opcional cuando proviene de un ticket
+  date          DateTime @default(now())
+  time          String   // HH:mm
+  type          String   // Mantenimiento, Diagnóstico, Configuración, etc.
+  client        String
+  equipmentCode String?
+  imei          String?
+  description   String
+  result        String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User     @relation(fields: [userId], references: [id])
+  ticket        Ticket?  @relation(fields: [ticketId], references: [id])
+
+  @@map("activity_logs")
+}
+
+// -----------------------------------------------------------------------------
+// REPORT BUILDER
+// -----------------------------------------------------------------------------
+
+enum FieldType {
+  TEXT
+  NUMBER
+  DATE
+  DATETIME
+  BOOLEAN
+  SELECT
+  MULTI_SELECT
+}
+
+model ReportConfiguration {
+  id          String         @id @default(uuid())
+  name        String
+  description String?
+  status      ResourceStatus @default(ACTIVE)
+  createdBy   String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  fields      ReportField[]
+
+  @@map("report_configurations")
+}
+
+model ReportField {
+  id         String              @id @default(uuid())
+  reportId   String
+  fieldName  String
+  label      String
+  type       FieldType           @default(TEXT)
+  order      Int                 @default(0)
+  visible    Boolean             @default(true)
+  filterable Boolean             @default(true)
+  required   Boolean             @default(false)
+  sortable   Boolean             @default(true)
+  filterType String?
+
+  report     ReportConfiguration @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@map("report_fields")
+}
+
+// -----------------------------------------------------------------------------
+// ASISTENTE DE IA Y KNOWLEDGE BASE
+// -----------------------------------------------------------------------------
+
+enum AIKnowledgeSourceType {
+  DOCUMENT
+  DATABASE
+  MANUAL
+  ENTRY
+  EXTERNAL_SOURCE
+}
+
+enum AIMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model AIKnowledgeSource {
+  id          String                @id @default(uuid())
+  name        String
+  type        AIKnowledgeSourceType @default(ENTRY)
+  description String?
+  status      ResourceStatus        @default(ACTIVE)
+  createdBy   String
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  entries     AIKnowledgeEntry[]
+
+  @@map("ai_knowledge_sources")
+}
+
+model AIKnowledgeEntry {
+  id        String             @id @default(uuid())
+  sourceId  String
+  title     String
+  content   String
+  commandId String?
+  tags      String?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  source    AIKnowledgeSource  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  command   Command?           @relation(fields: [commandId], references: [id])
+
+  @@map("ai_knowledge_entries")
+}
+
+model AIConversation {
+  id        String      @id @default(uuid())
+  userId    String
+  title     String
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  user      User        @relation(fields: [userId], references: [id])
+  messages  AIMessage[]
+
+  @@map("ai_conversations")
+}
+
+model AIMessage {
+  id             String         @id @default(uuid())
+  conversationId String
+  role           AIMessageRole  @default(USER)
+  content        String
+  createdAt      DateTime       @default(now())
+
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_messages")
+}
+
+// -----------------------------------------------------------------------------
+// AUDITORÍA ADMINISTRATIVA (AuditLog)
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  action    String   // USER_CREATED, COMMAND_UPDATED, MANUAL_DELETED, etc.
+  entity    String   // Command, User, Role, Manual, Application, etc.
+  entityId  String?
+  details   String?  // JSON o texto descriptivo (sin secretos/passwords)
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
